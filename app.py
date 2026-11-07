@@ -1,15 +1,14 @@
+import gc
+import hashlib
 
 import streamlit as st
 import torch
-import hashlib
-
 from PIL import Image
-
 from transformers import (
     BlipProcessor,
     BlipForConditionalGeneration,
     MarianTokenizer,
-    MarianMTModel
+    MarianMTModel,
 )
 
 from indictrans_telugu import IndicTransTelugu
@@ -22,7 +21,7 @@ from indictrans_telugu import IndicTransTelugu
 st.set_page_config(
     page_title="AI Image Caption Generator",
     page_icon="🖼️",
-    layout="centered"
+    layout="centered",
 )
 
 
@@ -30,53 +29,54 @@ st.set_page_config(
 # CUSTOM CSS
 # --------------------------------------------------
 
-st.markdown("""
-<style>
+st.markdown(
+    """
+    <style>
+    .main {
+        background-color: #f8f9fc;
+    }
 
-.main {
-    background-color: #f8f9fc;
-}
+    .title {
+        text-align: center;
+        color: #1e3a5f;
+        font-size: 36px;
+        font-weight: bold;
+    }
 
-.title {
-    text-align: center;
-    color: #1e3a5f;
-    font-size: 36px;
-    font-weight: bold;
-}
+    .subtitle {
+        text-align: center;
+        color: #555555;
+        font-size: 17px;
+    }
 
-.subtitle {
-    text-align: center;
-    color: #555555;
-    font-size: 17px;
-}
+    .caption-box {
+        background-color: #eef4ff;
+        padding: 20px;
+        border-radius: 12px;
+        border-left: 5px solid #2563eb;
+        color: #172554;
+        font-size: 18px;
+        line-height: 1.6;
+        margin-top: 15px;
+    }
 
-.caption-box {
-    background-color: #eef4ff;
-    padding: 20px;
-    border-radius: 12px;
-    border-left: 5px solid #2563eb;
-    color: #172554;
-    font-size: 18px;
-    line-height: 1.6;
-    margin-top: 15px;
-}
+    .info-box {
+        background-color: #f0f7ff;
+        padding: 15px;
+        border-radius: 10px;
+        margin-top: 15px;
+    }
 
-.info-box {
-    background-color: #f0f7ff;
-    padding: 15px;
-    border-radius: 10px;
-    margin-top: 15px;
-}
-
-.footer {
-    text-align: center;
-    color: gray;
-    font-size: 13px;
-    margin-top: 40px;
-}
-
-</style>
-""", unsafe_allow_html=True)
+    .footer {
+        text-align: center;
+        color: gray;
+        font-size: 13px;
+        margin-top: 40px;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 
 # --------------------------------------------------
@@ -85,57 +85,58 @@ st.markdown("""
 
 st.markdown(
     '<div class="title">🖼️ AI Image Caption Generator</div>',
-    unsafe_allow_html=True
+    unsafe_allow_html=True,
 )
 
 st.markdown(
     '<div class="subtitle">Generate image captions in English, Hindi and Telugu using AI</div>',
-    unsafe_allow_html=True
+    unsafe_allow_html=True,
 )
 
 st.write("")
 
 
 # --------------------------------------------------
-# MODEL LOADING FUNCTIONS
+# MEMORY CLEANUP
 # --------------------------------------------------
 
-@st.cache_resource
-def load_caption_model():
+def release_memory():
+    """Run Python garbage collection and clear unused CUDA cache."""
+    gc.collect()
 
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
+# --------------------------------------------------
+# MODEL LOADING FUNCTIONS
+# Models are deliberately NOT cached.
+# Each model is released after its operation.
+# Hugging Face downloads remain in the local cache.
+# --------------------------------------------------
+
+def load_caption_model():
     model_name = "Salesforce/blip-image-captioning-base"
 
     processor = BlipProcessor.from_pretrained(model_name)
-
-    model = BlipForConditionalGeneration.from_pretrained(
-        model_name
-    )
-
+    model = BlipForConditionalGeneration.from_pretrained(model_name)
     model.eval()
 
     return processor, model
 
 
-@st.cache_resource
 def load_hindi_model():
-
     model_name = "Helsinki-NLP/opus-mt-en-hi"
 
     tokenizer = MarianTokenizer.from_pretrained(model_name)
-
     model = MarianMTModel.from_pretrained(model_name)
-
     model.eval()
 
     return tokenizer, model
 
 
-@st.cache_resource
 def load_telugu_model():
-
-    translator = IndicTransTelugu()
-
-    return translator
+    return IndicTransTelugu()
 
 
 # --------------------------------------------------
@@ -143,28 +144,36 @@ def load_telugu_model():
 # --------------------------------------------------
 
 def generate_caption(image):
+    processor = None
+    model = None
 
-    processor, model = load_caption_model()
+    try:
+        processor, model = load_caption_model()
 
-    inputs = processor(
-        images=image,
-        return_tensors="pt"
-    )
-
-    with torch.no_grad():
-
-        output = model.generate(
-            **inputs,
-            max_new_tokens=30,
-            num_beams=5
+        inputs = processor(
+            images=image,
+            return_tensors="pt",
         )
 
-    caption = processor.decode(
-        output[0],
-        skip_special_tokens=True
-    )
+        with torch.no_grad():
+            output = model.generate(
+                **inputs,
+                max_new_tokens=30,
+                num_beams=5,
+            )
 
-    return caption
+        caption = processor.decode(
+            output[0],
+            skip_special_tokens=True,
+        )
+
+        return caption
+
+    finally:
+        # Release BLIP before a translation model is loaded.
+        del model
+        del processor
+        release_memory()
 
 
 # --------------------------------------------------
@@ -172,28 +181,53 @@ def generate_caption(image):
 # --------------------------------------------------
 
 def translate_to_hindi(text):
+    tokenizer = None
+    model = None
 
-    tokenizer, model = load_hindi_model()
+    try:
+        tokenizer, model = load_hindi_model()
 
-    inputs = tokenizer(
-        text,
-        return_tensors="pt",
-        padding=True
-    )
-
-    with torch.no_grad():
-
-        translated = model.generate(
-            **inputs,
-            max_length=100
+        inputs = tokenizer(
+            text,
+            return_tensors="pt",
+            padding=True,
         )
 
-    result = tokenizer.decode(
-        translated[0],
-        skip_special_tokens=True
-    )
+        with torch.no_grad():
+            translated = model.generate(
+                **inputs,
+                max_length=100,
+            )
 
-    return result
+        result = tokenizer.decode(
+            translated[0],
+            skip_special_tokens=True,
+        )
+
+        return result
+
+    finally:
+        # Release MarianMT after translation.
+        del model
+        del tokenizer
+        release_memory()
+
+
+# --------------------------------------------------
+# TELUGU TRANSLATION
+# --------------------------------------------------
+
+def translate_to_telugu(text):
+    translator = None
+
+    try:
+        translator = load_telugu_model()
+        return translator.translate(text)
+
+    finally:
+        # Release ONNX Runtime sessions after translation.
+        del translator
+        release_memory()
 
 
 # --------------------------------------------------
@@ -201,14 +235,11 @@ def translate_to_hindi(text):
 # --------------------------------------------------
 
 def clean_caption(text):
-
     text = text.strip()
-
     text = text.replace(" .", ".")
     text = text.replace(" ,", ",")
     text = text.replace(" !", "!")
     text = text.replace(" ?", "?")
-
     return text
 
 
@@ -237,7 +268,7 @@ st.sidebar.title("⚙️ Settings")
 
 language = st.sidebar.selectbox(
     "Choose Caption Language",
-    ["English", "Hindi", "Telugu"]
+    ["English", "Hindi", "Telugu"],
 )
 
 st.sidebar.markdown("---")
@@ -256,7 +287,7 @@ st.subheader("📤 Upload an Image")
 
 uploaded_file = st.file_uploader(
     "Choose an image",
-    type=["jpg", "jpeg", "png"]
+    type=["jpg", "jpeg", "png"],
 )
 
 
@@ -265,24 +296,18 @@ uploaded_file = st.file_uploader(
 # --------------------------------------------------
 
 if uploaded_file is not None:
-
     try:
-
         image_bytes = uploaded_file.getvalue()
 
         current_image_hash = hashlib.sha256(
             image_bytes
         ).hexdigest()
 
-        # Reset captions when a different image is uploaded
+        # Reset the previous caption when a different image is uploaded.
         if current_image_hash != st.session_state.image_hash:
-
             st.session_state.image_hash = current_image_hash
-
             st.session_state.english_caption = None
-
             st.session_state.final_caption = None
-
             st.session_state.caption_language = None
 
         image = Image.open(uploaded_file).convert("RGB")
@@ -292,79 +317,58 @@ if uploaded_file is not None:
         st.image(
             image,
             caption="Your Image",
-            width="stretch"
+            width="stretch",
         )
 
         st.write("")
 
         # --------------------------------------------------
-        # GENERATE CAPTION BUTTON
+        # GENERATE ENGLISH CAPTION
         # --------------------------------------------------
 
         if st.button(
             "✨ Generate Caption",
-            width="stretch"
+            width="stretch",
         ):
-
-            with st.spinner(
-                "🤖 AI is analyzing the image..."
-            ):
-
+            with st.spinner("🤖 AI is analyzing the image..."):
                 english_caption = generate_caption(image)
 
-                english_caption = clean_caption(
-                    english_caption
-                )
+            st.session_state.english_caption = clean_caption(
+                english_caption
+            )
 
-                st.session_state.english_caption = english_caption
-
-                # Force translation into the currently selected language
-                st.session_state.caption_language = None
+            # The selected language will be applied below.
+            st.session_state.caption_language = None
+            st.session_state.final_caption = None
 
         # --------------------------------------------------
-        # AUTOMATIC LANGUAGE TRANSLATION
+        # TRANSLATE WHEN THE SIDEBAR LANGUAGE CHANGES
         # --------------------------------------------------
 
         if st.session_state.english_caption is not None:
-
             if language != st.session_state.caption_language:
 
-                if language == "English":
+                with st.spinner(
+                    f"🌐 Preparing {language} caption..."
+                ):
+                    if language == "English":
+                        final_caption = st.session_state.english_caption
 
-                    st.session_state.final_caption = (
-                        st.session_state.english_caption
-                    )
-
-                elif language == "Hindi":
-
-                    with st.spinner(
-                        "🌐 Translating caption to Hindi..."
-                    ):
-
-                        st.session_state.final_caption = (
-                            translate_to_hindi(
-                                st.session_state.english_caption
-                            )
+                    elif language == "Hindi":
+                        final_caption = translate_to_hindi(
+                            st.session_state.english_caption
                         )
 
-                elif language == "Telugu":
-
-                    with st.spinner(
-                        "🌐 Translating caption to Telugu..."
-                    ):
-
-                        telugu_translator = load_telugu_model()
-
-                        st.session_state.final_caption = (
-                            telugu_translator.translate(
-                                st.session_state.english_caption
-                            )
+                    else:  # Telugu
+                        final_caption = translate_to_telugu(
+                            st.session_state.english_caption
                         )
 
                 st.session_state.final_caption = clean_caption(
-                    st.session_state.final_caption
+                    final_caption
                 )
 
+                # Update only after translation succeeds.
                 st.session_state.caption_language = language
 
             # --------------------------------------------------
@@ -372,7 +376,6 @@ if uploaded_file is not None:
             # --------------------------------------------------
 
             if st.session_state.final_caption:
-
                 st.subheader(
                     f"🤖 AI Generated Caption ({language})"
                 )
@@ -383,7 +386,7 @@ if uploaded_file is not None:
                         {st.session_state.final_caption}
                     </div>
                     """,
-                    unsafe_allow_html=True
+                    unsafe_allow_html=True,
                 )
 
                 st.write("")
@@ -397,23 +400,17 @@ if uploaded_file is not None:
                     data=st.session_state.final_caption,
                     file_name=f"image_caption_{language.lower()}.txt",
                     mime="text/plain",
-                    width="stretch"
+                    width="stretch",
                 )
 
     except Exception as e:
-
         st.error(
-            "❌ Something went wrong while generating the caption."
+            "❌ Something went wrong while generating or translating the caption."
         )
-
         st.exception(e)
 
-
 else:
-
-    st.info(
-        "👆 Please upload an image to get started."
-    )
+    st.info("👆 Please upload an image to get started.")
 
 
 # --------------------------------------------------
@@ -423,18 +420,19 @@ else:
 st.markdown("---")
 
 with st.expander("ℹ️ About This Project"):
+    st.write(
+        """
+        AI Image Caption Generator is an application that uses
+        deep learning and natural language processing to generate
+        meaningful descriptions of uploaded images.
 
-    st.write("""
-    AI Image Caption Generator is an application that uses
-    deep learning and natural language processing to generate
-    meaningful descriptions of uploaded images.
+        It supports three languages:
 
-    It supports three languages:
-
-    - English
-    - Hindi
-    - Telugu
-    """)
+        - English
+        - Hindi
+        - Telugu
+        """
+    )
 
 
 # --------------------------------------------------
@@ -442,15 +440,16 @@ with st.expander("ℹ️ About This Project"):
 # --------------------------------------------------
 
 with st.expander("⚙️ How It Works"):
-
-    st.write("""
-    1. Upload an image.
-    2. BLIP analyzes the image.
-    3. An English caption is generated.
-    4. MarianMT translates the caption into Hindi.
-    5. IndicTrans2 translates the caption into Telugu.
-    6. The final caption can be downloaded.
-    """)
+    st.write(
+        """
+        1. Upload an image.
+        2. BLIP analyzes the image.
+        3. An English caption is generated.
+        4. MarianMT translates the caption into Hindi.
+        5. IndicTrans2 translates the caption into Telugu.
+        6. The final caption can be downloaded.
+        """
+    )
 
 
 # --------------------------------------------------
@@ -458,17 +457,18 @@ with st.expander("⚙️ How It Works"):
 # --------------------------------------------------
 
 with st.expander("💻 Technologies Used"):
-
-    st.write("""
-    - Python
-    - Streamlit
-    - PyTorch
-    - Hugging Face Transformers
-    - BLIP Image Captioning Model
-    - MarianMT Translation Model
-    - IndicTrans2 ONNX
-    - Pillow
-    """)
+    st.write(
+        """
+        - Python
+        - Streamlit
+        - PyTorch
+        - Hugging Face Transformers
+        - BLIP Image Captioning Model
+        - MarianMT Translation Model
+        - IndicTrans2 ONNX
+        - Pillow
+        """
+    )
 
 
 # --------------------------------------------------
@@ -481,5 +481,5 @@ st.markdown(
         Developed using Artificial Intelligence and Deep Learning
     </div>
     """,
-    unsafe_allow_html=True
+    unsafe_allow_html=True,
 )

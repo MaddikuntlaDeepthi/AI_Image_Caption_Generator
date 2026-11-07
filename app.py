@@ -1,3 +1,8 @@
+import importlib.metadata
+
+print("TRANSFORMERS VERSION:", importlib.metadata.version("transformers"))
+print("TORCH VERSION:", importlib.metadata.version("torch"))
+print("TORCHVISION VERSION:", importlib.metadata.version("torchvision"))
 import streamlit as st
 import torch
 
